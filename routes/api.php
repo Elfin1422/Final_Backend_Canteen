@@ -7,6 +7,7 @@ use App\Http\Controllers\OrderController;
 use App\Http\Controllers\InventoryController;
 use App\Http\Controllers\ReportController;
 use App\Http\Controllers\UserController;
+use App\Http\Controllers\ProfileController;
 use Illuminate\Support\Facades\Route;
 
 // ── Public ──────────────────────────────────────────────────────────────────
@@ -18,6 +19,12 @@ Route::middleware('auth:sanctum')->group(function () {
 
     Route::post('/logout', [AuthController::class, 'logout']);
     Route::get('/me',      [AuthController::class, 'me']);
+
+    // ── User profile & password (admin + customer only, not cashier) ──
+    Route::middleware('role:admin,customer')->group(function () {
+        Route::put('/user/profile',  [ProfileController::class, 'updateProfile']);
+        Route::put('/user/password', [ProfileController::class, 'updatePassword']);
+    });
 
     // Categories
     Route::get('/categories', [CategoryController::class, 'index']);
@@ -63,7 +70,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/order-trend',        [ReportController::class, 'orderTrend']);
     });
 
-    // Users
+    // Users (admin only)
     Route::middleware('role:admin')->group(function () {
         Route::get('/users',           [UserController::class, 'index']);
         Route::post('/users',          [UserController::class, 'store']);

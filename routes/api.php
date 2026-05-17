@@ -9,6 +9,7 @@ use App\Http\Controllers\ReportController;
 use App\Http\Controllers\UserController;
 use App\Http\Controllers\ProfileController;
 use Illuminate\Support\Facades\Route;
+use App\Http\Controllers\PredictionController;
 
 // ── Public ──────────────────────────────────────────────────────────────────
 Route::post('/register', [AuthController::class, 'register']);
@@ -77,4 +78,8 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::put('/users/{user}',    [UserController::class, 'update']);
         Route::delete('/users/{user}', [UserController::class, 'destroy']);
     });
+    
+    Route::middleware('role:admin')->group(function () {
+        Route::get('/predictions', [PredictionController::class, 'predict']);
+});
 });

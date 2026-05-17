@@ -88,7 +88,7 @@ class PredictionController extends Controller
 
         // Run Python script, pass payload via stdin
         $process = proc_open(
-            'python3 ' . escapeshellarg($scriptPath),
+            'python ' . escapeshellarg($scriptPath),
             [
                 0 => ['pipe', 'r'],  // stdin
                 1 => ['pipe', 'w'],  // stdout

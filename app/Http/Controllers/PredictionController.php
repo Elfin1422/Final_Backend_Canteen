@@ -11,24 +11,25 @@ use Illuminate\Support\Facades\Cache;
  * PredictionController
  * =====================
  * Feeds order history to the Python ML script (predict.py) via subprocess.
- * Uses Random Forest Regressor + Linear Regression to:
- *   1. Predict next-7-day demand per menu item
- *   2. Rank items by predicted popularity
- *   3. Advise which items need restocking based on predicted demand vs current stock
  *
- * Results are cached for 1 hour to avoid re-training on every page load.
+ * Models used inside predict.py:
+ *   1. Random Forest Regressor  — predicts exact order quantities (regression)
+ *   2. Logistic Regression      — classifies demand into LOW/MEDIUM/HIGH/VERY_HIGH
+ *
+ * Results are cached for 60 minutes to avoid retraining on every page load.
+ * Admin can force a fresh run with ?refresh=1
  */
 class PredictionController extends Controller
 {
     /**
-     * Run the ML prediction pipeline and return results.
-     * Cached for 60 minutes — force refresh with ?refresh=1
+     * Run the ML prediction pipeline and return JSON results.
+     * Cached for 60 minutes — pass ?refresh=1 to force retrain.
      */
     public function predict(Request $request)
     {
-        $cacheKey = 'ml_predictions_v1';
+        $cacheKey = 'ml_predictions_v2';
 
-        // Allow admin to force a fresh run
+        // Allow admin to force a fresh prediction run
         if ($request->boolean('refresh')) {
             Cache::forget($cacheKey);
         }
@@ -41,11 +42,12 @@ class PredictionController extends Controller
     }
 
     /**
-     * Gather data from DB and pass it to the Python ML script.
+     * Gather order + menu data from the database and pass to Python ML script.
+     * Uses proc_open() to pipe JSON to stdin and read JSON from stdout.
      */
     private function runPrediction(): array
     {
-        // Fetch last 90 days of completed orders with items
+        // Fetch last 90 days of completed orders with their line items
         $orders = Order::with(['orderItems.menuItem.category'])
             ->where('status', 'completed')
             ->where('created_at', '>=', now()->subDays(90))
@@ -64,7 +66,7 @@ class PredictionController extends Controller
             })
             ->toArray();
 
-        // Fetch all menu items with category
+        // Fetch all menu items with their category and stock info
         $items = MenuItem::with('category')
             ->get()
             ->map(fn($item) => [
@@ -83,27 +85,32 @@ class PredictionController extends Controller
 
         $payload = json_encode(['orders' => $orders, 'items' => $items]);
 
-        // Locate the Python script relative to Laravel base path
+        // Path to the Python ML script (ml/ folder sits next to backend/)
         $scriptPath = base_path('../ml/predict.py');
 
-        // Run Python script, pass payload via stdin
+        // On Windows use 'python', on Linux/Mac use 'python3'
+        $pythonCmd = PHP_OS_FAMILY === 'Windows' ? 'python' : 'python3';
+
+        // Run Python script, passing order data via stdin
         $process = proc_open(
-            'python ' . escapeshellarg($scriptPath),
+            $pythonCmd . ' ' . escapeshellarg($scriptPath),
             [
-                0 => ['pipe', 'r'],  // stdin
-                1 => ['pipe', 'w'],  // stdout
-                2 => ['pipe', 'w'],  // stderr
+                0 => ['pipe', 'r'],  // stdin  — we write the JSON payload here
+                1 => ['pipe', 'w'],  // stdout — Python writes results here
+                2 => ['pipe', 'w'],  // stderr — capture any Python errors
             ],
             $pipes
         );
 
         if (!is_resource($process)) {
-            return ['error' => 'Failed to start prediction engine.'];
+            return ['error' => 'Failed to start the ML prediction engine. Check that Python is installed.'];
         }
 
+        // Send JSON payload to Python via stdin
         fwrite($pipes[0], $payload);
         fclose($pipes[0]);
 
+        // Read output and errors
         $output = stream_get_contents($pipes[1]);
         $errors = stream_get_contents($pipes[2]);
         fclose($pipes[1]);
@@ -111,13 +118,13 @@ class PredictionController extends Controller
         proc_close($process);
 
         if (!$output) {
-            return ['error' => 'Prediction engine returned no output. ' . $errors];
+            return ['error' => 'Prediction engine returned no output. Error: ' . $errors];
         }
 
         $result = json_decode($output, true);
 
         if (json_last_error() !== JSON_ERROR_NONE) {
-            return ['error' => 'Invalid output from prediction engine: ' . $output];
+            return ['error' => 'Invalid JSON from prediction engine: ' . substr($output, 0, 300)];
         }
 
         return $result;
